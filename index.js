@@ -68,6 +68,36 @@ function msg(text, quickReply) {
   return m;
 }
 
+// A tappable "Open results" button as a Flex message.
+// Flex URI actions accept long URLs (up to ~2000 chars), so the full ?state=
+// link opens correctly even though LINE won't linkify a long raw URL in text.
+function openResultButton(url, nSet, nSeg) {
+  return {
+    type: 'flex',
+    altText: 'Open your conveyor results',
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'md',
+        contents: [
+          { type: 'text', text: 'Conveyor results ready', weight: 'bold', size: 'lg', color: '#1F3A5F' },
+          { type: 'text', text: `${nSet} input(s) · ${nSeg} segment(s)`, size: 'sm', color: '#888888', wrap: true },
+          { type: 'text', text: 'Profile visualization + all outputs are inside.', size: 'sm', color: '#555555', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [
+          {
+            type: 'button', style: 'primary', color: '#1F3A5F',
+            action: { type: 'uri', label: 'Open calculated results', uri: url },
+          },
+        ],
+      },
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Prompt builders
 // ---------------------------------------------------------------------------
@@ -204,10 +234,17 @@ function handle(session, textRaw) {
       if (low === 'output' || low === '3') {
         const link = buildStateLink(session);
         const nSet = Object.keys(session.inputs).length;
+        if (link.length > 1900) {
+          // Too long for a Flex URI action — send as text so the user can copy it.
+          return [
+            msg('Your results link (long — tap and hold to copy, then open in a browser):'),
+            msg(link),
+            msg(`${nSet} input(s), ${session.segs.length} segment(s).`, qr([{ label: '☰ Menu', text: 'menu' }])),
+          ];
+        }
         return [
-          msg(`Here is your calculated conveyor (profile visualization + all outputs):`),
-          msg(link),
-          msg(`${nSet} input(s) set, ${session.segs.length} segment(s). Tap the link to view and interact with the full results.`, qr([{ label: '☰ Menu', text: 'menu' }])),
+          openResultButton(link, nSet, session.segs.length),
+          msg('Tap the button above to open your results (profile visualization + all outputs).', qr([{ label: '☰ Menu', text: 'menu' }])),
         ];
       }
       return [mainMenu()];
