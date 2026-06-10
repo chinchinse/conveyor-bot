@@ -170,9 +170,14 @@ function parseValue(text, f) {
 // Build the calculator link from current session
 // ---------------------------------------------------------------------------
 function buildStateLink(session) {
+  // Only include inputs the user set AND that differ from the field default.
+  // The HTML starts from the same defaults, so omitting them keeps the URL
+  // short enough for a LINE button (URI limit ~1000 chars).
   const inputs = {};
   for (const f of FIELDS) {
-    const v = session.inputs[f.id] != null ? session.inputs[f.id] : f.def;
+    const v = session.inputs[f.id];
+    if (v == null) continue;
+    if (String(v) === String(f.def)) continue;
     inputs[f.id] = String(v);
   }
   let segs = session.segs.length ? session.segs : [{ L: 100, h_end: 0, l0: 1.5, lu: 6, trough: 45 }];
