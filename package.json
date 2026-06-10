@@ -1,0 +1,16 @@
+{
+  "name": "conveyor-line-bot",
+  "version": "1.0.0",
+  "description": "LINE chatbot that collects conveyor-calculator inputs and returns a browser link with results",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.2.2",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
