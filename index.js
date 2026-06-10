@@ -239,12 +239,14 @@ function handle(session, textRaw) {
       if (low === 'output' || low === '3') {
         const link = buildStateLink(session);
         const nSet = Object.keys(session.inputs).length;
-        if (link.length > 1900) {
-          // Too long for a Flex URI action — send as text so the user can copy it.
+        // LINE Flex/button URI action allows ~1000 chars. If the link is longer
+        // (e.g. many segments or most values changed), a button can't hold it —
+        // send it as plain text so the user can copy-and-paste it into a browser.
+        if (link.length > 1000) {
           return [
-            msg('Your results link (long — tap and hold to copy, then open in a browser):'),
+            msg('Your results link is long, so here it is as text.\nTap and hold the link below → Copy → paste into any browser:'),
             msg(link),
-            msg(`${nSet} input(s), ${session.segs.length} segment(s).`, qr([{ label: '☰ Menu', text: 'menu' }])),
+            msg(`(${nSet} value(s) changed, ${session.segs.length} segment(s). Tip: open in Chrome/Safari, not the LINE in-app browser, for best results.)`, qr([{ label: '☰ Menu', text: 'menu' }])),
           ];
         }
         return [
