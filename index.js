@@ -108,6 +108,7 @@ function mainMenu() {
       { label: '1. Input', text: 'input' },
       { label: '2. Segments', text: 'segments' },
       { label: '3. Output', text: 'output' },
+      { label: '🔄 Reset', text: 'reset' },
     ])
   );
 }
@@ -116,22 +117,28 @@ function fieldPrompt(f, idx, total) {
   const head = total ? `(${idx + 1}/${total}) ` : '';
   const unit = f.unit && f.unit !== '-' ? ` [${f.unit}]` : '';
   const def = f.def === null
-    ? 'required — type a number'
+    ? (f.allowAuto ? 'reply "auto" to auto-calculate' : 'required — type a number')
     : `default ${f.def}${f.unit && f.unit !== '-' ? ' ' + f.unit : ''}`;
   const grp = f.group ? `── ${f.group} ──\n` : '';
-  return msg(
-    `${grp}${head}${f.label}${unit}\n(${def})`,
-    f.def === null
-      ? qr([{ label: '✖ Cancel', text: 'cancel' }])
-      : qr([{ label: '↩ Use default', text: '-' }, { label: '✖ Cancel', text: 'cancel' }])
-  );
+  const infoLine = f.info ? `\nℹ️ ${f.info}` : '';
+  // Quick-reply buttons depend on the field type
+  let buttons;
+  if (f.allowAuto) {
+    buttons = [{ label: '⚙ Auto', text: 'auto' }, { label: '✖ Cancel', text: 'cancel' }];
+  } else if (f.def === null) {
+    buttons = [{ label: '✖ Cancel', text: 'cancel' }];
+  } else {
+    buttons = [{ label: '↩ Use default', text: '-' }, { label: '✖ Cancel', text: 'cancel' }];
+  }
+  return msg(`${grp}${head}${f.label}${unit}\n(${def})${infoLine}`, qr(buttons));
 }
 
 function segFieldPrompt(f, idx) {
   const unit = f.unit && f.unit !== '-' ? ` [${f.unit}]` : '';
   const def = f.def === null ? 'required' : `default ${f.def}`;
+  const infoLine = f.info ? `\nℹ️ ${f.info}` : '';
   return msg(
-    `(${idx + 1}/${SEGMENT_FIELDS.length}) ${f.label}${unit}\n(${def})`,
+    `(${idx + 1}/${SEGMENT_FIELDS.length}) ${f.label}${unit}\n(${def})${infoLine}`,
     f.def === null
       ? qr([{ label: '✖ Cancel', text: 'cancel' }])
       : qr([{ label: '↩ Use default', text: '-' }, { label: '✖ Cancel', text: 'cancel' }])
@@ -144,7 +151,8 @@ function inputEditMenu(session, page = 0) {
   const start = page * perPage;
   const slice = FIELDS.slice(start, start + perPage);
   const items = slice.map(f => {
-    const cur = session.inputs[f.id] != null ? session.inputs[f.id] : f.def;
+    let cur = session.inputs[f.id] != null ? session.inputs[f.id] : f.def;
+    if (cur === null || cur === 'auto') cur = 'auto';
     return { label: `${f.id}=${cur}`.slice(0, 20), text: `edit:${f.id}` };
   });
   if (start + perPage < FIELDS.length) items.push({ label: '▶ More', text: `editpage:${page + 1}` });
@@ -157,8 +165,17 @@ function inputEditMenu(session, page = 0) {
 // ---------------------------------------------------------------------------
 function parseValue(text, f) {
   const t = (text || '').trim().toLowerCase();
+  // "auto" — only valid for fields that allow it (e.g. reducer ratio)
+  if (t === 'auto') {
+    if (f.allowAuto) return { ok: true, value: 'auto' };
+    return { ok: false, reason: 'no_auto' };
+  }
   if (t === '-' || t === 'd' || t === 'default' || t === 'def') {
-    if (f.def === null) return { ok: false, reason: 'no_default' };
+    if (f.def === null) {
+      // no numeric default; if it allows auto, treat "-" as auto
+      if (f.allowAuto) return { ok: true, value: 'auto' };
+      return { ok: false, reason: 'no_default' };
+    }
     return { ok: true, value: f.def };
   }
   const v = Number(t.replace(/,/g, ''));
@@ -174,22 +191,39 @@ function buildStateLink(session) {
   // The HTML starts from the same defaults, so omitting them keeps the URL
   // short enough for a LINE button (URI limit ~1000 chars).
   const inputs = {};
+  let reducerIAuto = true;     // default: let the HTML auto-calc the reducer ratio
   for (const f of FIELDS) {
     const v = session.inputs[f.id];
     if (v == null) continue;
+    // reducerI: if user chose auto (stored as 'auto'), leave it auto-calculated
+    if (f.id === 'reducerI') {
+      if (v === 'auto' || v == null) { reducerIAuto = true; continue; }
+      reducerIAuto = false;
+      inputs.reducerI = String(v);
+      continue;
+    }
     if (String(v) === String(f.def)) continue;
     inputs[f.id] = String(v);
   }
+
   let segs = session.segs.length ? session.segs : [{ L: 100, h_end: 0, l0: 1.5, lu: 6, trough: 45 }];
   segs = segs.map(s => ({
     L: Number(s.L), h_end: Number(s.h_end || 0), dH: Number(s.h_end || 0),
     l0: Number(s.l0 != null ? s.l0 : 1.5), lu: Number(s.lu != null ? s.lu : 6),
     trough: Number(s.trough != null ? s.trough : 45),
   }));
+
+  // liftHead: read from the RAW session (not the filtered `inputs`, which drops
+  // defaults). Fall back to the field default so the profile lift head is never 0.
+  const liftHeadDef = (FIELDS.find(f => f.id === 'liftHead') || {}).def || 0;
+  const liftHead = session.inputs.liftHead != null ? Number(session.inputs.liftHead) : Number(liftHeadDef);
+  // Make sure liftHead is always present in inputs so the HTML field updates.
+  inputs.liftHead = String(liftHead);
+
   const state = {
     inputs, segs,
-    liftHead: Number(inputs.liftHead || 0),
-    overrides: [], bearingOverride: {}, reducerIAuto: true, takeupType: 'gravity-tail',
+    liftHead,
+    overrides: [], bearingOverride: {}, reducerIAuto, takeupType: 'gravity-tail',
   };
   const b64 = Buffer.from(JSON.stringify(state), 'utf8').toString('base64')
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -204,6 +238,16 @@ function handle(session, textRaw) {
   const low = text.toLowerCase();
 
   // Global commands available anywhere
+  if (low === 'reset' || low === 'ล้าง' || low === 'รีเซ็ต' || low === 'clear') {
+    // Wipe everything and start the first-time input flow again.
+    const fresh = newSession();
+    Object.keys(session).forEach(k => { delete session[k]; });
+    Object.assign(session, fresh);
+    return [
+      msg('🔄 All values cleared. Starting fresh.\nEntering all inputs — type a number or use the default button.'),
+      (session.stage = 'inputFirst', session.inputIdx = 0, fieldPrompt(FIELDS[0], 0, FIELDS.length)),
+    ];
+  }
   if (low === 'cancel' || low === 'menu' || low === 'ยกเลิก') {
     session.stage = 'menu';
     session.editId = null; session.segEditIdx = null; session.curSeg = {}; session.segFieldIdx = 0;
@@ -212,7 +256,7 @@ function handle(session, textRaw) {
   if (low === 'start' || low === 'help' || low === 'hi' || low === 'hello' || low === 'เริ่ม') {
     session.stage = 'menu';
     return [
-      msg('Conveyor Calculator bot.\n• 1 Input — set or edit values\n• 2 Segments — manage conveyor profile\n• 3 Output — get the results link\nType "menu" anytime.'),
+      msg('Conveyor Calculator bot.\n• 1 Input — set or edit values\n• 2 Segments — manage conveyor profile\n• 3 Output — get the results link\n• reset — clear everything\nType "menu" anytime.'),
       mainMenu(),
     ];
   }
