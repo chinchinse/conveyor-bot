@@ -283,20 +283,8 @@ function handle(session, textRaw) {
       if (low === 'output' || low === '3') {
         const link = buildStateLink(session);
         const nSet = Object.keys(session.inputs).length;
-        // LINE Flex/button URI action allows ~1000 chars. If the link is longer
-        // (e.g. many segments or most values changed), a button can't hold it —
-        // send it as plain text so the user can copy-and-paste it into a browser.
-        if (link.length > 1000) {
-          return [
-            msg('Your results link is long, so here it is as text.\nTap and hold the link below → Copy → paste into any browser:'),
-            msg(link),
-            msg(`(${nSet} value(s) changed, ${session.segs.length} segment(s). Tip: open in Chrome/Safari, not the LINE in-app browser, for best results.)`, qr([{ label: '☰ Menu', text: 'menu' }])),
-          ];
-        }
-        return [
-          openResultButton(link, nSet, session.segs.length),
-          msg('Tap the button above to open your results (profile visualization + all outputs).', qr([{ label: '☰ Menu', text: 'menu' }])),
-        ];
+        // Defer to onEvent (async) so it can shorten the URL before sending.
+        return [{ __shorten: link, nSet, nSeg: session.segs.length }];
       }
       return [mainMenu()];
     }
@@ -424,6 +412,55 @@ function segMenu(session) {
 }
 
 // ---------------------------------------------------------------------------
+// URL shortening via TinyURL (free, no API key). Falls back to the long URL
+// if the service is slow or fails, so Output always works.
+// ---------------------------------------------------------------------------
+const https = require('https');
+
+function shortenUrl(longUrl) {
+  return new Promise((resolve) => {
+    const api = 'https://tinyurl.com/api-create.php?url=' + encodeURIComponent(longUrl);
+    let done = false;
+    const finish = (val) => { if (!done) { done = true; resolve(val); } };
+    // Give up after 4s and use the long URL — never leave the user hanging.
+    const timer = setTimeout(() => finish(null), 4000);
+    try {
+      https.get(api, (res) => {
+        if (res.statusCode !== 200) { clearTimeout(timer); return finish(null); }
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          clearTimeout(timer);
+          const url = (data || '').trim();
+          finish(/^https?:\/\/\S+$/.test(url) ? url : null);
+        });
+      }).on('error', () => { clearTimeout(timer); finish(null); });
+    } catch (e) { clearTimeout(timer); finish(null); }
+  });
+}
+
+// Build the Output reply messages, given a (possibly shortened) link.
+function outputMessages(link, nSet, nSeg, shortened) {
+  // A short link always fits in a button.
+  if (link.length <= 1000) {
+    return [
+      openResultButton(link, nSet, nSeg),
+      msg(
+        (shortened ? '' : '') +
+        'Tap the button above to open your results (profile visualization + all outputs).',
+        qr([{ label: '☰ Menu', text: 'menu' }])
+      ),
+    ];
+  }
+  // Long link (shortening failed AND link > 1000) — send as copyable text.
+  return [
+    msg('Your results link is long, so here it is as text.\nTap and hold the link below → Copy → paste into any browser:'),
+    msg(link),
+    msg(`(${nSet} value(s) changed, ${nSeg} segment(s). Tip: open in Chrome/Safari, not the LINE in-app browser.)`, qr([{ label: '☰ Menu', text: 'menu' }])),
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Webhook
 // ---------------------------------------------------------------------------
 app.post('/webhook', line.middleware(config), async (req, res) => {
@@ -446,7 +483,17 @@ async function onEvent(event) {
   if (!sessions[userId]) sessions[userId] = newSession();
   const session = sessions[userId];
 
-  const messages = handle(session, event.message.text).slice(0, 5);
+  let replies = handle(session, event.message.text);
+
+  // If the handler asked for a shortened link (Output), do it now (async).
+  if (replies.length === 1 && replies[0] && replies[0].__shorten) {
+    const { __shorten: longUrl, nSet, nSeg } = replies[0];
+    const short = await shortenUrl(longUrl);
+    const link = short || longUrl;          // fall back to long URL on failure
+    replies = outputMessages(link, nSet, nSeg, !!short);
+  }
+
+  const messages = replies.slice(0, 5);
   return client.replyMessage(event.replyToken, messages);
 }
 
